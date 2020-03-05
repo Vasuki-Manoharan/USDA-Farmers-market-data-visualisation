@@ -1,0 +1,594 @@
+---
+title: "Project markdown"
+output: html_document
+---
+```{r}
+library(dplyr)
+library(tidyr)
+library(maps)
+library(ggplot2)
+library(tidyverse)
+library(mapdata)
+library(ggmap)
+library(plyr)
+library(gapminder)
+library(lubridate)
+library(anytime)
+library(reshape2)
+library(scales)
+library(Hmisc)
+library(magrittr)
+library(stringr)
+library(pingr)
+library(RCurl)
+library(data.table)
+library(treemap)
+library(leaflet)
+library(RColorBrewer)
+library(plotly)
+library(ggalluvial)
+library(geojsonio)
+library(parsedate)
+library(gganimate)
+library(viridis)
+library(orca)
+library(svglite)
+library(htmlwidgets)
+```
+
+
+
+```{r}
+orig<-fmarket
+rucc<-rucc[1:4]
+fmarket<-merge(fmarket,rucc,by='County')
+fmarket<-fmarket%>%
+  distinct(FMID, .keep_all = TRUE)
+
+```
+
+
+
+```{r}
+states<-subset(orig,select = c(State,FMID))
+states<-states%>%
+  group_by(State)%>%
+  summarise(Count=n())
+states$code<-state.abb[match(states$State,state.name)]
+
+l <- list(color = toRGB("white"), width = 2)
+g <- list(
+  scope = 'usa',
+  projection = list(type = 'albers usa'),
+  showlakes = TRUE,
+  lakecolor = toRGB('white')
+)
+
+fig <- plot_geo(states, locationmode = 'USA-states')
+fig <- fig %>% add_trace(
+  z = ~Count, text = ~State, locations = ~code,
+  color = ~Count, colors = 'Greens'
+)
+
+
+fig <- fig %>% colorbar(title = "Count of farmer's market")
+fig <- fig %>% layout(
+  title = 'Farmers market data by State<br>(Hover for breakdown)',
+  geo = g
+)
+orca(fig, "map.svg")
+
+fig
+
+
+
+```
+
+
+```{r pressure, echo=FALSE}
+#percentage of US farmers selling products
+food<-subset(orig,select = c(State,Organic:WildHarvested)) 
+food[2:31]<-ifelse(food[2:31]=='Y',as.integer(1),as.integer(0))
+food[is.na(food)] <- 0
+total<-length(unique(orig$FMID))
+sumtotal<-melt(food,State='id')
+sumtotal<-sumtotal%>%
+  filter(value==1)%>%
+  drop_na()%>%
+  group_by(variable)%>%
+  summarise(sum=n())
+sumtotal$percent<-(sumtotal$sum/total)*100
+percentage_products<-sumtotal%>%
+  arrange(desc(percent))%>%
+  ggplot(aes(variable,percent,fill=variable,text=percent))+geom_bar(stat='identity')+theme(axis.text.x = element_text(angle = 90, hjust = 1))+ylab("% of products")+theme(legend.position = "none")+xlab("Products")+ggtitle("Percentage of products")
+plot(percentage_products)
+ggsave(file="percentage_products.svg", plot=percentage_products, width=10, height=8,dpi = 300)
+
+```
+
+```{r}
+#frequency of products in each StatE
+group<-food%>%
+  group_by(State)%>%
+  melt()%>%
+  group_by(State)%>%
+  filter(value==1)%>%
+  group_by(State)%>%
+  table()
+group<-as.data.frame(group)
+group<-subset(group,select=(-value))
+group_max<-group%>%
+  group_by(State)%>%
+  filter(Freq==max(Freq))
+product_frequency<-ggplot(group_max,aes(State,Freq,fill=variable))+geom_bar(stat = 'identity',position='dodge')+theme(axis.text.x = element_text(angle = 90, hjust = 1))+ylab("Count of markets")+ggtitle("Highest produce by State")
+ggsave(file="product_frequency.svg", plot=product_frequency, width=10, height=8,dpi = 300)
+plot(product_frequency)
+```
+
+```{r}
+#frequency of products in each RUCC 
+
+food_RUCC<-subset(fmarket,select = c(RUCC_2013,Organic:WildHarvested)) 
+food_RUCC[2:31]<-ifelse(food_RUCC[2:31]=='Y',as.integer(1),as.integer(0))
+food_RUCC[is.na(food_RUCC)] <- 0
+names(food_RUCC)[1]<-'RUCC'
+food_RUCC$RUCC <- (as.character(food_RUCC$RUCC))
+
+group_RUCC<-gather(food_RUCC,key=variable,value = count,-RUCC)
+
+group_RUCC<-group_RUCC%>%
+  filter(count==1)%>%
+  group_by(RUCC)%>%
+  table()
+group_RUCC<-as.data.frame(group_RUCC)
+group_RUCC<-subset(group_RUCC,select=(-count))
+group_RUCC_max<-group_RUCC%>%
+  group_by(RUCC)%>%
+  top_n(n=3)
+RUCC_frq<-ggplot(group_RUCC_max,aes(RUCC,Freq,fill=variable,text=Freq))+geom_bar(stat = 'identity',position = 'dodge')+ facet_wrap(RUCC~.,scales = "free")+xlab("RUCC")+ylab("Count")+ggtitle("Produce by RUCC \nY axis implies Number of farmer's market" )+theme(axis.title.x = element_blank(),axis.text.x = element_blank())+labs(fill="Type of produce")
+ggsave(file="product_frequency_rucc.svg", plot=RUCC_frq, width=10, height=8,dpi = 300)
+ggplotly(RUCC_frq, tooltip="text")
+
+```
+
+
+```{r}
+#growth of farmers market
+growth<-subset(fmarket,select = c(FMID,State,updateTime))
+growth$updateTime<-parse_date(growth$updateTime)
+growth$year<-year(growth$updateTime)
+bar_race<-growth%>%
+  filter(year!=2020)%>%
+  group_by(State,year)%>%
+  drop_na()%>%
+  tally()
+
+bar_race<-bar_race%>%
+  mutate(text = paste0("Year: ", year, "\n", "No of markets established : ", n, "\n", "State: ",State))
+
+
+bar<-bar_race%>%
+ggplot(aes(State,n,fill=year,text=text))+geom_bar(stat = 'identity',position = "stack")+scale_fill_viridis(discrete = FALSE)+ggtitle("Growth of farmers market over the years") +xlab("")+ylab("Count of farmer's market")+labs(fill="Year")+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+ggsave(file="growth_fm.svg", plot=bar, width=10, height=8,dpi = 300)
+
+
+ggplotly(bar, tooltip="text")
+```
+
+```{r}
+#Addressing if it is accessible to individuals
+#market /100,000 residents
+count<-growth%>%
+  group_by(State)%>%
+  tally()
+
+population$State<-str_remove(population$State,".")
+```
+
+
+```{r}
+pop<-merge(count,population,by="State")
+pop$Population<-str_remove_all(pop$Population,',')
+pop$Population<-as.numeric(pop$Population)
+pop$per_million<-(pop$Population/100000)
+pop$ave<-(pop$n/pop$Population)*100000
+
+#top 10 cities with Good average
+top_ind<-ggplot(top_n(pop,n=10,ave),aes(State,ave))+geom_point( size=5, color="red", fill=alpha("orange", 0.3), alpha=0.7, shape=21, stroke=2)+theme(axis.text.x = element_text(angle = 90, hjust = 1))+theme(legend.position = "none")+ggtitle("State census vs Farmer's market Ratio \nTop 10") +ylab("Ratio")+geom_segment( aes(x=State, xend=State, y=0, yend=ave))
+ggsave(file="top10ind.svg", plot=top_ind, width=10, height=8,dpi = 300)
+plot(top_ind)
+
+```
+
+
+```{r}
+#top 10 cities with Bad average
+bot_ind<-ggplot(top_n(pop,n=-10,ave),aes(State,ave))+geom_point( size=5, color="red", fill=alpha("orange", 0.3), alpha=0.7, shape=21, stroke=2) +theme(axis.text.x = element_text(angle = 90, hjust = 1))+theme(legend.position = "none")+ggtitle("State census vs Farmer's market Ratio \nBottom 10") +ylab("Ratio")+geom_segment( aes(x=State, xend=State, y=0, yend=ave))
+ggsave(file="bot10ind.svg", plot=bot_ind, width=10, height=8,dpi = 300)
+plot(bot_ind)
+```
+
+
+```{r}
+#Addressing if it is accessible to students
+School$State<-str_remove(School$State,".")
+```
+
+
+```{r}
+sch<-merge(count,School,by="State")
+sch_plot<-ggplot(sch,aes(State))+geom_point(aes(y=countf2sschools,text=countf2sschools), color = "blue")+geom_point(aes(y=n,text=n), color = "red")+xlab('States') +ggtitle("No of schools vs no of states \nBlue=No of schools\nRed=No of Markets")+ylab('Count')+theme(axis.text.x = element_text(angle = 90, hjust = 1))+labs(color="school")
+ggsave(file="school_plot.svg", plot=sch_plot, width=10, height=8,dpi = 300)
+ggplotly(sch_plot,tooltip = "text")
+```
+
+```{r}
+season2<-select(fmarket,State,FMID,Season1Date,Season2Date,Season3Date,Season4Date)
+
+season2$Season1Date<-gsub('January','01/20/2018',season2$Season1Date)
+season2$Season1Date<-gsub('February','02/20/2018',season2$Season1Date)
+season2$Season1Date<-gsub('March','03/20/2018',season2$Season1Date)
+season2$Season1Date<-gsub('April','04/20/2018',season2$Season1Date)
+season2$Season1Date<-gsub('May','05/20/2018',season2$Season1Date)
+season2$Season1Date<-gsub('June','06/20/2018',season2$Season1Date)
+season2$Season1Date<-gsub('July','07/20/2018',season2$Season1Date)
+season2$Season1Date<-gsub('August','08/20/2018',season2$Season1Date)
+season2$Season1Date<-gsub('September','09/20/2018',season2$Season1Date)
+season2$Season1Date<-gsub('October','10/20/2018',season2$Season1Date)
+season2$Season1Date<-gsub('November','11/20/2018',season2$Season1Date)
+season2$Season1Date<-gsub('December','12/20/2018',season2$Season1Date)
+
+#Similarly for season 2 Date column
+season2$Season2Date<-gsub('January','01/20/2018',season2$Season2Date)
+season2$Season2Date<-gsub('February','02/20/2018',season2$Season2Date)
+season2$Season2Date<-gsub('March','03/20/2018',season2$Season2Date)
+season2$Season2Date<-gsub('April','04/20/2018',season2$Season2Date)
+season2$Season2Date<-gsub('May','05/20/2018',season2$Season2Date)
+season2$Season2Date<-gsub('June','06/20/2018',season2$Season2Date)
+season2$Season2Date<-gsub('July','07/20/2018',season2$Season2Date)
+season2$Season2Date<-gsub('August','08/20/2018',season2$Season2Date)
+season2$Season2Date<-gsub('September','09/20/2018',season2$Season2Date)
+season2$Season2Date<-gsub('October','10/20/2018',season2$Season2Date)
+season2$Season2Date<-gsub('November','11/20/2018',season2$Season2Date)
+season2$Season2Date<-gsub('December','12/20/2018',season2$Season2Date)
+
+#Similarly for season 3 Date column
+season2$Season3Date<-gsub('January','01/20/2018',season2$Season3Date)
+season2$Season3Date<-gsub('February','02/20/2018',season2$Season3Date)
+season2$Season3Date<-gsub('March','03/20/2018',season2$Season3Date)
+season2$Season3Date<-gsub('April','04/20/2018',season2$Season3Date)
+season2$Season3Date<-gsub('May','05/20/2018',season2$Season3Date)
+season2$Season3Date<-gsub('June','06/20/2018',season2$Season3Date)
+season2$Season3Date<-gsub('July','07/20/2018',season2$Season3Date)
+season2$Season3Date<-gsub('August','08/20/2018',season2$Season3Date)
+season2$Season3Date<-gsub('September','09/20/2018',season2$Season3Date)
+season2$Season3Date<-gsub('October','10/20/2018',season2$Season3Date)
+season2$Season3Date<-gsub('November','11/20/2018',season2$Season3Date)
+season2$Season3Date<-gsub('December','12/20/2018',season2$Season3Date)
+
+#Similarly for season 4 Date column
+season2$Season4Date<-gsub('January','01/20/2018',season2$Season4Date)
+season2$Season4Date<-gsub('February','02/20/2018',season2$Season4Date)
+season2$Season4Date<-gsub('March','03/20/2018',season2$Season4Date)
+season2$Season4Date<-gsub('April','04/20/2018',season2$Season4Date)
+season2$Season4Date<-gsub('May','05/20/2018',season2$Season4Date)
+season2$Season4Date<-gsub('June','06/20/2018',season2$Season4Date)
+season2$Season4Date<-gsub('July','07/20/2018',season2$Season4Date)
+season2$Season4Date<-gsub('August','08/20/2018',season2$Season4Date)
+season2$Season4Date<-gsub('September','09/20/2018',season2$Season4Date)
+season2$Season4Date<-gsub('October','10/20/2018',season2$Season4Date)
+season2$Season4Date<-gsub('November','11/20/2018',season2$Season4Date)
+season2$Season4Date<-gsub('December','12/20/2018',season2$Season4Date)
+
+season3<-season2%>%
+  separate(Season1Date,c('S1_start','S1_end'),'to')%>%
+  separate(Season2Date,c('S2_start','S2_end'),'to')%>%
+  separate(Season3Date,c('S3_start','S3_end'),'to')%>%
+  separate(Season4Date,c('S4_start','S4_end'),'to')
+
+season3$S1_start<-(as.Date(season3$S1_start, format = "%m/%d/%Y"))
+season3$S1_end<-(as.Date(season3$S1_end, format = "%m/%d/%Y"))
+season3$S2_start<-(as.Date(season3$S2_start, format = "%m/%d/%Y"))
+season3$S2_end<-(as.Date(season3$S2_end, format = "%m/%d/%Y"))
+season3$S3_start<-(as.Date(season3$S3_start, format = "%m/%d/%Y"))
+season3$S3_end<-(as.Date(season3$S3_end, format = "%m/%d/%Y"))
+season3$S4_start<-(as.Date(season3$S4_start, format = "%m/%d/%Y"))
+season3$S4_end<-(as.Date(season3$S4_end, format = "%m/%d/%Y"))
+
+
+
+
+S1_dur<-season3%>%
+  select(State,FMID,S1_start,S1_end)%>%
+  drop_na()
+S2_dur<-season3%>%
+  select(State,FMID,S2_start,S2_end)%>%
+  drop_na()
+S3_dur<-season3%>%
+  select(State,FMID,S3_start,S3_end)%>%
+  drop_na()
+S4_dur<-season3%>%
+  select(State,FMID,S4_start,S4_end)%>%
+  drop_na()
+
+
+S1_dur$S1_start<-ymd(S1_dur$S1_start)
+S1_dur$S1_end<-ymd(S1_dur$S1_end)
+S2_dur$S2_start<-ymd(S2_dur$S2_start)
+S2_dur$S2_end<-ymd(S2_dur$S2_end)
+S3_dur$S3_start<-ymd(S3_dur$S3_start)
+S3_dur$S3_end<-ymd(S3_dur$S3_end)
+S4_dur$S4_start<-ymd(S4_dur$S4_start)
+S4_dur$S4_end<-ymd(S4_dur$S4_end)
+
+
+month_names = month.abb[1:12]
+month_dif = function(dates) # function to calc the dif. it expects a 2 units vector to be passed over
+{
+  start = dates[1] # first unit of the vector is expected to be the start date
+  end = dates[2] # second unit is expected to be the end date
+  
+  start_month = month(start)
+  end_month = month(end) 
+  start_year = year(start) 
+  end_year = year(end)
+  year_dif = end_year - start_year
+  
+  if(year_dif == 0){ #if start and end both are in the same year month is start till end
+    return(paste(month_names[start_month:end_month], collapse= ", " ))
+  } else { #if there is an overlap, mont is start till dezember and jan till end (with x full year in between)
+    paste(c(month_names[start_month:12],
+            rep(month_names, year_dif-1),
+            month_names[1:end_month]), collapse = ", ")
+  }
+}
+
+S1_dur$elap<-apply(S1_dur[3:4], 1, month_dif) 
+S2_dur$elap<-apply(S2_dur[3:4], 1, month_dif) 
+S3_dur$elap<-apply(S3_dur[3:4], 1, month_dif) 
+S4_dur$elap<-apply(S4_dur[3:4], 1, month_dif) 
+
+
+result1<-S1_dur%>%
+  subset(select=c(-(S1_start),-(S1_end)))
+result2<-S2_dur%>%
+  subset(select=c(-(S2_start),-(S2_end)))
+result3<-S3_dur%>%
+  subset(select=c(-(S3_start),-(S3_end)))
+result4<-S4_dur%>%
+  subset(select=c(-(S4_start),-(S4_end)))
+
+
+
+result1$elap<-str_split(result1$elap,",",13)
+result2$elap<-str_split(result2$elap,",",13)
+result3$elap<-str_split(result3$elap,",",13)
+result4$elap<-str_split(result4$elap,",",13)
+
+
+c1<-ldply(result1$elap,rbind)
+c2<-ldply(result2$elap,rbind)
+c3<-ldply(result3$elap,rbind)
+c4<-ldply(result4$elap,rbind)
+
+
+#removing excess months because they are repetititon
+c1<-subset(c1,select = -(13))
+c2<-subset(c2,select = -(13))
+
+
+c1<-cbind(c1,result1)
+c2<-cbind(c2,result2)
+c3<-cbind(c3,result3)
+c4<-cbind(c4,result4)
+
+c1<-subset(c1,select = -(elap))
+c2<-subset(c2,select = -(elap))
+c3<-subset(c3,select = -(elap))
+c4<-subset(c4,select = -(elap))
+
+
+
+c1<-gather(c1,key=head,value=month,-State,-FMID)
+drop_na(c1)
+c2<-gather(c2,key=head,value=month,-State,-FMID)
+drop_na(c2)
+c3<-gather(c3,key=head,value=month,-State,-FMID)
+drop_na(c3)
+c4<-gather(c4,key=head,value=month,-State,-FMID)
+drop_na(c4)
+
+
+c1<-subset(c1,select = c(-(head),(-(FMID))))
+c2<-subset(c2,select = c(-(head),(-(FMID))))
+c3<-subset(c3,select = c(-(head),(-(FMID))))
+c4<-subset(c4,select = c(-(head),(-(FMID))))
+c1$month<-str_trim(c1$month)
+c2$month<-str_trim(c2$month)
+c3$month<-str_trim(c3$month)
+c4$month<-str_trim(c4$month)
+
+
+
+c5<-c1%>%
+  group_by(State)%>%
+  drop_na()%>%
+  table()%>%
+  data.frame()
+c6<-c2%>%
+  group_by(State)%>%
+  drop_na()%>%
+  table()%>%
+  data.frame()
+c7<-c3%>%
+  group_by(State)%>%
+  drop_na()%>%
+  table()%>%
+  data.frame()
+c8<-c4%>%
+  group_by(State)%>%
+  drop_na()%>%
+  table()%>%
+  data.frame()
+
+c5$month<-as.character(c5$month)
+c6$month<-as.character(c6$month)
+c7$month<-as.character(c7$month)
+c8$month<-as.character(c8$month)
+
+
+```
+
+
+```{r}
+
+
+c5<-c5%>%
+  mutate(text = paste0("Month: ", month, "\n", "State: ", State, "\n", "No of markets in Season: ",round(Freq,2)))
+c6<-c6%>%
+  mutate(text = paste0("Month: ", month, "\n", "State: ", State, "\n", "No of markets in Season: ",round(Freq,2)))
+c7<-c7%>%
+  mutate(text = paste0("Month: ", month, "\n", "State: ", State, "\n", "No of markets in Season: ",round(Freq,2)))
+c8<-c8%>%
+  mutate(text = paste0("Month: ", month, "\n", "State: ", State, "\n", "No of markets in Season: ",round(Freq,2)))
+
+```
+
+
+```{r}
+s1<-ggplot(c5,aes(State,month,fill=Freq,text=text))+geom_tile()+ggtitle("Seasonality chart for season 1")+scale_fill_gradient(low="white", high="green")+theme(axis.text.x = element_text(angle = 90, hjust = 1))+labs(fill="Markets in Season")+ylab("Month")
+ggsave(file="season1.svg", plot=s1, width=10, height=8,dpi = 300)
+ggplotly(s1, tooltip="text")
+```
+
+
+```{r}
+s2<-ggplot(c6,aes(State,month,fill=Freq,text=text))+geom_tile()+ggtitle("Seasonality chart for season 2")+scale_fill_gradient(low="white", high="brown")+theme(axis.text.x = element_text(angle = 90, hjust = 1))+labs(fill="Markets in Season")+ylab("Month")
+ggsave(file="season2.svg", plot=s2, width=10, height=8,dpi = 300)
+ggplotly(s2, tooltip="text")
+```
+
+```{r}
+s3<-ggplot(c7,aes(State,month,fill=Freq,text=text))+geom_tile()+ggtitle("Seasonality chart for season 3")+scale_fill_gradient(low="white", high="orange")+theme(axis.text.x = element_text(angle = 90, hjust = 1))+labs(fill="Markets in Season")+ylab("Month")
+ggsave(file="season3.svg", plot=s3, width=10, height=8,dpi = 300)
+ggplotly(s3, tooltip="text")
+
+```
+
+```{r}
+s4<-ggplot(c8,aes(State,month,fill=Freq,text=text))+geom_tile()+ggtitle("Seasonality chart for season 4")+scale_fill_gradient(low="white", high="pink")+theme(axis.text.x = element_text(angle = 90, hjust = 1))+labs(fill="Markets in Season")+ylab("Month")
+ggsave(file="season4.svg", plot=s4, width=10, height=8,dpi = 300)
+ggplotly(s4, tooltip="text")
+
+```
+```{r}
+##Socialmedia
+media<-select(fmarket,FMID,Website,Facebook,Twitter,Youtube,OtherMedia)
+media[2:6]<-ifelse(media[2:6]=='',as.integer(0),as.integer(1))
+drop_na(media)
+media$FMID <- (as.character(media$FMID))
+media_pie<-melt(media)
+media_pie<-subset(media_pie,select = -FMID)
+media_pie<-media_pie%>%
+  filter(value==1)%>%
+  group_by(variable)%>%
+  summarise(Count=sum(n()))
+
+mp<-ggplot(media_pie,aes(x="",y=Count,fill=variable))+geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +theme_void()+ggtitle("Farmer's market Social media presence")+labs(fill="Type of social media")
+
+ggsave(file="media_pie.svg", plot=mp, width=10, height=8,dpi = 300)
+plot(mp)
+
+```
+
+```{r}
+#Social media Alluvial
+sample1<-media<-select(fmarket,Type.of.location,Website,Facebook,Twitter,Youtube,OtherMedia)
+sample1[2:6]<-ifelse(sample1[2:6]=='',as.integer(0),as.integer(1))
+sample2<-melt(sample1)
+sample2<-sample2%>%
+  group_by(Type.of.location,variable)%>%
+  table()
+sample2<-data.frame(sample2)
+sample2[,3]<-ifelse(sample2[,3]==1,as.character("Yes"),as.character("No"))
+alluvial<-ggplot(sample2,
+       aes(y = Freq, axis1 = Type.of.location, axis2 = variable,text=Freq)) +
+  geom_alluvium(aes(fill = value), width = 1/12) +
+  geom_stratum(width = 1/12, fill = "black", color = "grey") +
+  geom_label(stat = "stratum", infer.label = TRUE) +
+  scale_x_discrete(limits = c("Type of location", "Type of social media"), expand = c(.05, .05)) +
+  scale_fill_brewer(type = "qual", palette = "Set1") +
+  ggtitle("Farmer's market Social media presence,by location and medium")+labs(fill="Path")+ylab("Count of markets")
+
+ggsave(file="alluvial.svg", plot=alluvial, width=10, height=8,dpi = 300)
+
+plot(alluvial)
+```
+
+```{r}
+#payment
+#Selecting the columns from farmers_market_info used for plotting
+select_payment<-select(fmarket,State,Credit,WIC,WICcash,SFMNP,SNAP)
+select_payment[2:6]<-ifelse(select_payment[2:6]=='Y',as.integer(1),as.integer(0))
+
+summarise_function<-summarise(group_by(select_payment,State),Credit=sum(Credit),WIC=sum(WIC),WICcash=sum(WICcash),SFMNP=sum(SFMNP),Snap=sum(SNAP))
+
+tree_sample<-melt(summarise_function)
+treemap(tree_sample,index=('variable'),vSize='value',type='index',title='Payment method used across country')
+
+
+```
+
+
+```{r}
+#pAYMENT PER STATE
+payment_state<-melt(select_payment,id='State')
+payment_state<-payment_state%>%
+  filter(value==1)%>%
+  group_by(State,variable)%>%
+  table()
+payment_state<-data.frame(payment_state)
+payment_per_state<-ggplot(payment_state,aes(State,Freq,group=variable))+geom_point(aes(color=variable))+theme(axis.text.x = element_text(angle = 90, hjust = 1))+ggtitle("Payment type count by State")+xlab(element_blank())+ylab("Count of markets")+labs(group="Type of payment")
+
+ggsave(file="payment_per_state.svg", plot=payment_per_state, width=10, height=8,dpi = 300)
+
+plot(payment_per_state)
+
+```
+
+
+```{r}
+max_per_state<-payment_state%>%
+  group_by(State)%>%
+  filter(Freq==max(Freq)) 
+payment_max_state<-ggplot(top_n(max_per_state,n=10,State),aes(State,Freq,color=variable))+geom_point()+
+  geom_segment( aes(x=State, xend=State, y=0, yend=Freq))+theme(axis.text.x = element_text(angle = 90, hjust = 1))+xlab(element_blank())+ylab("Count of markets")
+
+ggsave(file="payment_max_state.svg", plot=payment_max_state, width=10, height=8,dpi = 300)
+
+plot(payment_max_state)
+
+```
+
+
+
+```{r}
+rural_code_payment<-select(fmarket,RUCC_2013,Credit,WIC,WICcash,SFMNP,SNAP)
+rural_code_payment[2:6]<-ifelse(rural_code_payment[2:6]=='Y',as.integer(1),as.integer(0))
+payment_rucc<-melt(rural_code_payment,id='RUCC_2013')
+payment_rucc_group<-payment_rucc%>%
+  filter(value==1)%>%
+  group_by(RUCC_2013,variable)%>%
+  table()
+payment_rucc_group<-data.frame(payment_rucc_group) 
+payment_rucc_group<-payment_rucc_group%>%
+  mutate(text = paste0("RUCC: ", RUCC_2013, "\n", "Type of payment : ", variable, "\n", "No of markets accepting this form of payment: ",round(Freq,2)))
+
+q<-ggplot(payment_rucc_group,aes(RUCC_2013,Freq,fill=variable,text=Freq))+geom_bar(stat='identity')+ggtitle('Payment type across RUCC')+xlab("RUCC")+ylab("Count of markets")+labs(fill='Type of payment')
+ggsave(file="rural_payment.svg", plot=q, width=10, height=8,dpi = 300)
+
+ggplotly(q, tooltip="text")
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
